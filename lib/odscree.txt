@@ -1,0 +1,219 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+class OrderItem {
+  final String orderId;
+  final String productId;
+  final int quantity;
+  final double total;
+
+  OrderItem({
+    required this.orderId,
+    required this.productId,
+    required this.quantity,
+    required this.total,
+  });
+
+  factory OrderItem.fromJson(Map<String, dynamic> json) {
+    return OrderItem(
+      orderId: json['order_id'],
+      productId: json['product_id'],
+      quantity: json['quantity'],
+      total: json['total'].toDouble(),
+    );
+  }
+}
+
+class Product {
+  final String imageUrl;
+  final String name;
+
+  Product({required this.imageUrl, required this.name});
+
+  factory Product.fromJson(Map<String, dynamic> json) {
+    return Product(
+      imageUrl: json['image_url'],
+      name: json['name'],
+    );
+  }
+}
+
+class OrderDetailScreen extends StatefulWidget {
+  final String orderId;
+
+  OrderDetailScreen({required this.orderId});
+
+  @override
+  _OrderDetailScreenState createState() => _OrderDetailScreenState();
+}
+
+class _OrderDetailScreenState extends State<OrderDetailScreen> {
+  static final Map<String, List<OrderItem>> _orderItemsCache = {};
+  static final Map<String, Product> _productCache = {};
+  List<OrderItem> orderItems = [];
+  bool isLoading = true;
+  String? errorMessage;
+  Set<int> selectedItems = {};
+
+  @override
+  void initState() {
+    super.initState();
+    fetchOrderItems();
+  }
+
+  Future<void> fetchOrderItems() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    if (_orderItemsCache.containsKey(widget.orderId)) {
+      setState(() {
+        orderItems = _orderItemsCache[widget.orderId]!;
+        isLoading = false;
+      });
+      await fetchProductDetails(orderItems);
+      return;
+    }
+
+    try {
+      final response = await http.get(
+          Uri.parse(
+              'https://python-whatsapp-bot-main-production-3c9c.up.railway.app/order-items/all?order_id=${widget.orderId}'),
+          headers: {'ngrok-skip-browser-warning': 'true'});
+
+      if (response.statusCode == 200) {
+        final jsonData = jsonDecode(response.body);
+        if (jsonData['status'] == 'success') {
+          final items = (jsonData['data'] as List)
+              .map((item) => OrderItem.fromJson(item))
+              .toList();
+          _orderItemsCache[widget.orderId] = items;
+          await fetchProductDetails(items);
+          setState(() {
+            orderItems = items;
+            isLoading = false;
+          });
+        } else {
+          setState(() {
+            isLoading = false;
+            errorMessage = 'Failed to load order items: ${jsonData['status']}';
+          });
+        }
+      } else {
+        setState(() {
+          isLoading = false;
+          errorMessage = 'Failed to load order items: ${response.statusCode}';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        isLoading = false;
+        errorMessage = 'Error fetching order items: $e';
+      });
+    }
+  }
+
+  Future<void> fetchProductDetails(List<OrderItem> items) async {
+    for (var item in items) {
+      if (!_productCache.containsKey(item.productId)) {
+        try {
+          final response = await http.get(
+            Uri.parse(
+                'https://python-whatsapp-bot-main-production-3c9c.up.railway.app/product-by-retailerid?retailer_id=${item.productId}'),
+            headers: {'ngrok-skip-browser-warning': 'true'},
+          );
+
+          if (response.statusCode == 200) {
+            final jsonData = jsonDecode(response.body);
+            if (jsonData['status'] == 'success') {
+              _productCache[item.productId] =
+                  Product.fromJson(jsonData['product']);
+            }
+          }
+        } catch (e) {
+          print('Error fetching product ${item.productId}: $e');
+        }
+      }
+    }
+  }
+
+  void toggleSelection(int index) {
+    setState(() {
+      if (selectedItems.contains(index)) {
+        selectedItems.remove(index);
+      } else {
+        selectedItems.add(index);
+      }
+    });
+    _callDummyApi(index);
+  }
+
+  void _callDummyApi(int index) {
+    print('✅ Dummy API called for item at index: $index');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('${widget.orderId}'),
+        backgroundColor: Colors.green,
+      ),
+      body: isLoading
+          ? Center(child: CircularProgressIndicator())
+          : errorMessage != null
+              ? Center(child: Text(errorMessage!))
+              : orderItems.isEmpty
+                  ? Center(child: Text('No items found for this order.'))
+                  : ListView.builder(
+                      itemCount: orderItems.length,
+                      itemBuilder: (context, index) {
+                        final item = orderItems[index];
+                        final product = _productCache[item.productId];
+                        final isSelected = selectedItems.contains(index);
+                        final unitPrice = item.quantity > 0
+                            ? item.total / item.quantity
+                            : 0.0;
+                        final totalPrice = item.total.toStringAsFixed(2);
+
+                        return Card(
+                          margin: EdgeInsets.all(10),
+                          child: ListTile(
+                            leading: product != null
+                                ? Image.network(
+                                    product.imageUrl,
+                                    width: 50,
+                                    height: 50,
+                                    fit: BoxFit.cover,
+                                    errorBuilder:
+                                        (context, error, stackTrace) =>
+                                            Icon(Icons.error),
+                                  )
+                                : Icon(Icons.image_not_supported),
+                            title: Text(
+                                product?.name ?? 'Product ${item.productId}'),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Quantity: ${item.quantity}'),
+                                Text(
+                                    'Unit Price: \$${unitPrice.toStringAsFixed(2)}'),
+                                Text('Total Price: \$${totalPrice}'),
+                              ],
+                            ),
+                            trailing: IconButton(
+                              icon: Icon(
+                                Icons.check_circle,
+                                color: isSelected ? Colors.green : Colors.grey,
+                              ),
+                              onPressed: () => toggleSelection(index),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+    );
+  }
+}
